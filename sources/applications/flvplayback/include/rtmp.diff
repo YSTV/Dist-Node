@@ -1,0 +1,145 @@
+diff -ruw /home/kevin/crtmpserver-0.0~dfsg+svn474-old/crtmpserver-0.0~dfsg+svn474/applications/flvplayback//include/flvplaybackapplication.h ./include/flvplaybackapplication.h
+--- /home/kevin/crtmpserver-0.0~dfsg+svn474-old/crtmpserver-0.0~dfsg+svn474/applications/flvplayback//include/flvplaybackapplication.h	2011-06-06 07:00:19.000000000 -0700
++++ ./include/flvplaybackapplication.h	2011-09-15 03:14:06.966972516 -0700
+@@ -22,6 +22,7 @@
+ #define _FLVPLAYBACKAPPLICATION_H
+ 
+ #include "application/baseclientapplication.h"
++#include "protocols/timer/basetimerprotocol.h"
+ 
+ namespace app_flvplayback {
+ #ifdef HAS_PROTOCOL_RTMP
+@@ -44,6 +45,22 @@
+ 	class FLVPlaybackApplication
+ 	: public BaseClientApplication {
+ 	private:
++		class RestartStreamTimer
++		: public BaseTimerProtocol {
++		private:
++			FLVPlaybackApplication *_pApplication;
++			vector<Variant> _streams;
++
++		public:
++			RestartStreamTimer(FLVPlaybackApplication *pApplication);
++			virtual ~RestartStreamTimer();
++			void RestartStream(Variant& streamConfig);
++			virtual bool TimePeriodElapsed();
++		};
++		friend class RestartStreamTimer;
++
++		RestartStreamTimer* _pTimer;
++
+ #ifdef HAS_PROTOCOL_RTMP
+ 		RTMPAppProtocolHandler *_pRTMPHandler;
+ #endif /* HAS_PROTOCOL_RTMP */
+@@ -65,6 +82,8 @@
+ 		virtual ~FLVPlaybackApplication();
+ 
+ 		virtual bool Initialize();
++		virtual void SignalStreamUnRegistered(BaseStream *pStream);
++		virtual bool OutboundConnectionFailed(Variant &customParameters);
+ 	};
+ }
+ 
+diff -ruw /home/kevin/crtmpserver-0.0~dfsg+svn474-old/crtmpserver-0.0~dfsg+svn474/applications/flvplayback//src/flvplaybackapplication.cpp ./src/flvplaybackapplication.cpp
+--- /home/kevin/crtmpserver-0.0~dfsg+svn474-old/crtmpserver-0.0~dfsg+svn474/applications/flvplayback//src/flvplaybackapplication.cpp	2011-06-06 07:00:19.000000000 -0700
++++ ./src/flvplaybackapplication.cpp	2011-09-17 02:36:59.671270654 -0700
+@@ -28,8 +28,30 @@
+ #include "rtspappprotocolhandler.h"
+ #include "netio/netio.h"
+ #include "application/clientapplicationmanager.h"
++#include "streaming/streamstypes.h"
+ using namespace app_flvplayback;
+ 
++FLVPlaybackApplication::RestartStreamTimer::RestartStreamTimer(FLVPlaybackApplication *pApplication) {
++	_pApplication = pApplication;
++}
++
++FLVPlaybackApplication::RestartStreamTimer::~RestartStreamTimer() {
++}
++
++void FLVPlaybackApplication::RestartStreamTimer::RestartStream(Variant& streamConfig) {
++	_streams.push_back(streamConfig);
++}
++
++bool FLVPlaybackApplication::RestartStreamTimer::TimePeriodElapsed() {
++	vector<Variant>::iterator iter;
++	for(iter = _streams.begin(); iter != _streams.end(); iter++) {
++		INFO("Restarting stream with streamConfig: %s", iter->ToString().c_str());
++		_pApplication->PullExternalStream(*iter);
++	}
++	_streams.clear();
++	return true;
++}
++
+ FLVPlaybackApplication::FLVPlaybackApplication(Variant &configuration)
+ : BaseClientApplication(configuration) {
+ #ifdef HAS_PROTOCOL_RTMP
+@@ -48,9 +70,15 @@
+ 	_pRTPHandler = NULL;
+ 	_pRTSPHandler = NULL;
+ #endif /* HAS_PROTOCOL_RTP */
++	_pTimer = NULL;
+ }
+ 
+ FLVPlaybackApplication::~FLVPlaybackApplication() {
++	if(_pTimer) {
++		_pTimer->EnqueueForDelete();
++		_pTimer = NULL;
++	}
++
+ #ifdef HAS_PROTOCOL_RTMP
+ 	UnRegisterAppProtocolHandler(PT_INBOUND_RTMP);
+ 	UnRegisterAppProtocolHandler(PT_OUTBOUND_RTMP);
+@@ -127,5 +155,53 @@
+ 	RegisterAppProtocolHandler(PT_RTSP, _pRTSPHandler);
+ #endif /* HAS_PROTOCOL_RTP */
+ 
++	_pTimer = new RestartStreamTimer(this);
++	_pTimer->EnqueueForTimeEvent(5);
++
+ 	return PullExternalStreams();
+ }
++
++void FLVPlaybackApplication::SignalStreamUnRegistered(BaseStream *pStream) {
++	if(!TAG_KIND_OF(pStream->GetType(), ST_IN_NET))
++		return;
++
++	INFO("Stream %u of type %s with name `%s` unregistered from application `%s`",
++		pStream->GetUniqueId(),
++		STR(tagToString(pStream->GetType())),
++		STR(pStream->GetName()),
++		STR(GetName()));
++
++	FOR_MAP(_configuration["externalStreams"], string, Variant, i) {
++		Variant &streamConfig = MAP_VAL(i);
++		if (streamConfig != V_MAP) {
++			WARN("External stream configuration is invalid:\n%s",
++			STR(streamConfig.ToString()));
++			continue;
++		}
++		if (streamConfig["localStreamName"] == pStream->GetName()) {
++			_pTimer->RestartStream(streamConfig);
++			break;
++		}
++	}
++}
++
++bool FLVPlaybackApplication::OutboundConnectionFailed(Variant &customParameters) {
++	INFO("OutboundConnectionFailed, customParameters: %s", customParameters.ToString().c_str());
++	string streamName = customParameters["localStreamName"];
++	FOR_MAP(_configuration["externalStreams"], string, Variant, i) {
++		Variant &streamConfig = MAP_VAL(i);
++		if (streamConfig != V_MAP) {
++			WARN("External stream configuration is invalid:\n%s",
++			STR(streamConfig.ToString()));
++			continue;
++		}
++		if (streamConfig["localStreamName"] == streamName) {
++			_pTimer->RestartStream(streamConfig);
++			break;
++		}
++	}
++
++	return false;
++}

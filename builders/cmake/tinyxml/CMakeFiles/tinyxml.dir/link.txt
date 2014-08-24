@@ -1,0 +1,1 @@
+/usr/bin/c++  -fPIC -g   -shared -Wl,-soname,libtinyxml.so -o libtinyxml.so CMakeFiles/tinyxml.dir/opt/crtmpserver/3rdparty/tinyxml/tinyxmlparser.cpp.o CMakeFiles/tinyxml.dir/opt/crtmpserver/3rdparty/tinyxml/tinyxmlerror.cpp.o CMakeFiles/tinyxml.dir/opt/crtmpserver/3rdparty/tinyxml/tinyxml.cpp.o 
